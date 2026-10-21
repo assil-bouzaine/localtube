@@ -60,35 +60,88 @@ X11).
 
 ## Install
 
-All dependencies are in the official Arch repos (most are already installed if
-you have mpv and Qt 6):
+These steps are for Arch Linux; every dependency is in the official repos.
+
+**1. Install the dependencies** (most are already there if you use mpv and Qt 6):
 
 ```sh
-sudo pacman -S --needed mpv ffmpeg qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools cmake
+sudo pacman -S --needed git cmake mpv ffmpeg qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools
 ```
 
-Then either install for your user (no root needed):
+For hardware decoding, also install the VA-API driver for your GPU:
+`intel-media-driver` (Intel Broadwell and newer), `libva-mesa-driver` (AMD), or
+use the NVIDIA driver (NVDEC). `vainfo` shows whether it works.
+
+**2. Download the code:**
 
 ```sh
-./install.sh                 # installs ~/.local/bin/localtube and a desktop entry
-./install.sh --uninstall
+git clone https://github.com/assil-bouzaine/localtube.git
+cd localtube
 ```
 
-or build a pacman package:
+**3. Build and install.** Pick one of the two options.
+
+Option A: install for your user only. No root needed, and keep the `localtube`
+folder, since it is used for updating and uninstalling:
 
 ```sh
-cd packaging/arch && makepkg -si
+./install.sh
 ```
 
-Hardware decoding needs the VA-API driver for your GPU: `intel-media-driver`
-(Intel Broadwell+), `libva-mesa-driver` (AMD), or the NVIDIA driver (NVDEC).
-Check with `vainfo`.
+This installs `~/.local/bin/localtube` and adds **LocalTube** to your app
+launcher. The first build takes a few minutes.
 
-To make it the default video player:
+Option B: install system-wide as a pacman package:
 
 ```sh
-xdg-mime default localtube.desktop video/mp4 video/x-matroska video/webm video/quicktime video/x-msvideo
+cd packaging/arch
+makepkg -si
 ```
+
+**4. Optional: make LocalTube your default video player.** Opening a video from
+your file manager or browser then starts LocalTube:
+
+```sh
+xdg-mime default localtube.desktop video/mp4 video/x-m4v video/matroska video/x-matroska \
+    video/webm video/quicktime video/vnd.avi video/x-msvideo video/x-ms-wmv video/x-flv \
+    video/mpeg video/mp2t video/ogg video/3gpp application/vnd.ms-asf
+```
+
+**Updating** to the newest version:
+
+```sh
+cd localtube
+git pull
+./install.sh            # or, for the package: cd packaging/arch && makepkg -si
+```
+
+## Uninstall
+
+**1. Remove the app.** Use the method you installed with:
+
+```sh
+./install.sh --uninstall      # Option A: run inside the localtube folder
+sudo pacman -R localtube      # Option B: the pacman package
+```
+
+**2. If LocalTube was your default video player,** give those video types back
+to another player, for example mpv:
+
+```sh
+xdg-mime default mpv.desktop video/mp4 video/x-m4v video/matroska video/x-matroska \
+    video/webm video/quicktime video/vnd.avi video/x-msvideo video/x-ms-wmv video/x-flv \
+    video/mpeg video/mp2t video/ogg video/3gpp application/vnd.ms-asf
+```
+
+You can also delete the `=localtube.desktop` lines from `~/.config/mimeapps.list`.
+
+**3. Optionally, delete your settings, watch history and cached thumbnails:**
+
+```sh
+rm -r ~/.config/localtube ~/.local/share/localtube ~/.cache/localtube
+```
+
+Finally, delete the `localtube` folder you cloned.
 
 ## Usage
 

@@ -1,19 +1,28 @@
 #!/bin/sh
 # Builds LocalTube and installs it for the current user (default ~/.local).
 #   ./install.sh              build + install
-#   ./install.sh --uninstall  remove the installed files
+#   ./install.sh --uninstall  remove the app (your settings and history are kept)
 #   PREFIX=/opt/localtube ./install.sh
 set -e
 cd "$(dirname "$0")"
 PREFIX="${PREFIX:-$HOME/.local}"
 
 if [ "$1" = "--uninstall" ]; then
-    if [ ! -f build/install_manifest.txt ]; then
-        echo "Nothing to uninstall (build/install_manifest.txt not found)." >&2
-        exit 1
+    if [ -f build/install_manifest.txt ]; then
+        xargs -d '\n' rm -fv < build/install_manifest.txt
+    else
+        # The build folder is gone: remove the files a default install creates.
+        rm -fv "$PREFIX/bin/localtube" \
+               "$PREFIX/share/applications/localtube.desktop" \
+               "$PREFIX/share/icons/hicolor/scalable/apps/localtube.svg" \
+               "$PREFIX/share/licenses/localtube/Roboto-OFL.txt"
     fi
-    xargs -d '\n' rm -fv < build/install_manifest.txt
+    rmdir "$PREFIX/share/licenses/localtube" 2>/dev/null || true
     update-desktop-database "$PREFIX/share/applications" 2>/dev/null || true
+    echo
+    echo "LocalTube was removed. Your settings, watch history and thumbnail cache"
+    echo "were kept; delete them with:"
+    echo "  rm -r ~/.config/localtube ~/.local/share/localtube ~/.cache/localtube"
     exit 0
 fi
 

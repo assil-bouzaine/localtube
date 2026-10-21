@@ -5,7 +5,7 @@ pkgver=1.0.0
 pkgrel=1
 pkgdesc="YouTube-style video player for downloaded videos and movies (Qt 6 + libmpv)"
 arch=('x86_64')
-url="https://github.com/"
+url="https://github.com/assil-bouzaine/localtube"
 # No license has been chosen for LocalTube itself yet (all rights reserved).
 # The bundled Roboto font is OFL-1.1.
 license=('LicenseRef-none' 'OFL-1.1')
