@@ -1,0 +1,28 @@
+# Builds the package from this source tree:
+#   cd packaging/arch && makepkg -si
+pkgname=localtube
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="YouTube-style video player for downloaded videos and movies (Qt 6 + libmpv)"
+arch=('x86_64')
+url="https://github.com/"
+# No license has been chosen for LocalTube itself yet (all rights reserved).
+# The bundled Roboto font is OFL-1.1.
+license=('LicenseRef-none' 'OFL-1.1')
+depends=('mpv' 'ffmpeg' 'qt6-base' 'qt6-declarative' 'qt6-svg' 'qt6-wayland' 'hicolor-icon-theme')
+makedepends=('cmake' 'qt6-shadertools')
+optdepends=('intel-media-driver: hardware decoding on Intel GPUs (Broadwell and newer)'
+            'libva-mesa-driver: hardware decoding on AMD GPUs'
+            'nvidia-utils: hardware decoding on NVIDIA GPUs (NVDEC)'
+            'yt-dlp: download YouTube videos to watch offline')
+
+build() {
+    cmake -S "$startdir/../.." -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr
+    cmake --build build
+}
+
+package() {
+    DESTDIR="$pkgdir" cmake --install build
+}

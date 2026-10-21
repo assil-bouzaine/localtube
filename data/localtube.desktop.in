@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=LocalTube
+GenericName=Video Player
+Comment=Play downloaded YouTube videos and movies in a YouTube-style player
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/localtube %F
+Icon=localtube
+Terminal=false
+Categories=AudioVideo;Video;Player;Qt;
+Keywords=youtube;video;movie;player;mpv;
+StartupWMClass=localtube
+MimeType=video/mp4;video/x-m4v;video/matroska;video/x-matroska;video/webm;video/quicktime;video/vnd.avi;video/x-msvideo;video/avi;video/divx;video/x-ms-wmv;video/x-flv;video/mpeg;video/mp2t;video/ogg;video/x-ogm+ogg;video/x-theora+ogg;video/3gpp;video/3gpp2;video/vnd.rn-realvideo;application/vnd.rn-realmedia;application/vnd.ms-asf;audio/mpeg;audio/mp4;audio/ogg;audio/opus;audio/flac;audio/x-matroska;
