@@ -24,6 +24,8 @@
 #include <QStandardPaths>
 #include <QUrl>
 #include <QVersionNumber>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 
 Platform *Platform::instance()
 {
@@ -165,7 +167,26 @@ bool Platform::hyprlandLua() const
     return lua == 1;
 }
 
-bool Platform::setMiniplayer(QWindow *, bool enabled)
+void Platform::setMiniplayer(QWindow *, bool enabled)
+{
+    if (m_miniplayerPending)
+        return;
+    if (!hyprland()) {
+        emit miniplayerFinished(enabled, false);
+        return;
+    }
+    m_miniplayerPending = true;
+    auto *watcher = new QFutureWatcher<bool>(this);
+    connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher, enabled] {
+        const bool handled = watcher->result();
+        watcher->deleteLater();
+        m_miniplayerPending = false;
+        emit miniplayerFinished(enabled, handled);
+    });
+    watcher->setFuture(QtConcurrent::run([this, enabled] { return configureMiniplayer(enabled); }));
+}
+
+bool Platform::configureMiniplayer(bool enabled)
 {
     if (!hyprland())
         return false;
@@ -234,20 +255,21 @@ bool Platform::setMiniplayer(QWindow *, bool enabled)
     if (steps.isEmpty())
         return true;
 
+    QProcess dispatch;
     if (lua) {
         QString script;
         for (const auto &step : steps)
             script += QStringLiteral("hl.dispatch(") + step.first + QStringLiteral(") ");
         if (qEnvironmentVariableIsSet("LOCALTUBE_DEBUG"))
             fprintf(stderr, "[localtube] hyprctl eval %s\n", qPrintable(script));
-        QProcess::startDetached(QStringLiteral("hyprctl"), {QStringLiteral("eval"), script});
+        dispatch.start(QStringLiteral("hyprctl"), {QStringLiteral("eval"), script});
     } else {
         QStringList cmds;
         for (const auto &step : steps)
             cmds << step.second;
-        QProcess::startDetached(QStringLiteral("hyprctl"), {QStringLiteral("--batch"), cmds.join(QStringLiteral(" ; "))});
+        dispatch.start(QStringLiteral("hyprctl"), {QStringLiteral("--batch"), cmds.join(QStringLiteral(" ; "))});
     }
-    return true;
+    return dispatch.waitForFinished(1500) && dispatch.exitStatus() == QProcess::NormalExit && dispatch.exitCode() == 0;
 }
 
 QString Platform::fileUrl(const QString &path)

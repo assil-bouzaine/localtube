@@ -1,6 +1,7 @@
 import QtCore
 import QtQuick
 import QtQuick.Window
+import QtQuick.Controls as Controls
 import LocalTube
 
 Window {
@@ -31,10 +32,30 @@ Window {
 
     PlaylistModel { id: playlist }
 
+    Connections {
+        target: playlist
+        function onOpened(index) {
+            window.playIndex(index)
+            settings.lastFolder = Platform.dirName(playlist.pathAt(index))
+        }
+        function onOpenFailed(error) {
+            window.loading = false
+            if (player.loaded) window.notify(error)
+            else window.errorText = error
+        }
+    }
+
     property bool loading: false
     property bool captionsPending: false
     property string errorText: ""
     property bool miniplayer: false
+    property bool miniplayerPending: false
+    property string notification: ""
+    function notify(message) {
+        notification = message
+        notificationTimer.restart()
+    }
+    Timer { id: notificationTimer; interval: 6000; onTriggered: window.notification = "" }
     property rect savedGeometry
     property bool wasMaximized: false
     readonly property bool fullscreen: visibility === Window.FullScreen
@@ -44,11 +65,10 @@ Window {
 
     // ------------------------------------------------------- opening
     function openPaths(paths) {
-        const index = playlist.open(paths)
-        if (index >= 0)
-            playIndex(index)
-        if (paths.length)
-            settings.lastFolder = Platform.dirName(playlist.pathAt(Math.max(0, index)) || paths[0])
+        if (!paths.length) return
+        loading = true
+        errorText = player.mpv.initializationError
+        if (!errorText) playlist.open(paths)
     }
 
     function openFiles() {
@@ -119,13 +139,26 @@ Window {
     }
 
     function setMiniplayer(on) {
-        if (on === miniplayer)
+        if (on === miniplayer || miniplayerPending)
             return
         if (on && fullscreen)
             visibility = Window.Windowed
-        miniplayer = on
-        if (Platform.setMiniplayer(window, on))
-            return
+        if (on)
+            savedGeometry = Qt.rect(x, y, width, height)
+        miniplayerPending = true
+        Platform.setMiniplayer(window, on)
+    }
+
+    Connections {
+        target: Platform
+        function onMiniplayerFinished(on, handled) {
+            window.miniplayerPending = false
+            window.miniplayer = on
+            if (!handled) window.applyMiniplayerGeometry(on)
+        }
+    }
+
+    function applyMiniplayerGeometry(on) {
         if (on) {
             savedGeometry = Qt.rect(x, y, width, height)
             flags = flags | Qt.WindowStaysOnTopHint
@@ -230,7 +263,7 @@ Window {
             channel: window.metadataValue(["artist", "album_artist", "uploader", "channel", "author"])
             youtubeId: window.youtubeId
             qualityMode: settings.qualityMode
-            qualityMemory: JSON.parse(settings.qualityMemory || "{}")
+            qualityMemory: window.readQualityMemory()
             stableVolume: settings.stableVolume
 
             onNextRequested: window.next()
@@ -243,7 +276,7 @@ Window {
             onCaptionsPreferenceChanged: enabled => settings.captions = enabled ? 1 : 0
             onQualityModeRequested: mode => settings.qualityMode = mode
             onQualityLearned: (key, level) => {
-                const memory = JSON.parse(settings.qualityMemory || "{}")
+                const memory = window.readQualityMemory()
                 memory[key] = level
                 settings.qualityMemory = JSON.stringify(memory)
             }
@@ -252,6 +285,13 @@ Window {
             onOpenFolderRequested: window.openFolder()
             onAddSubtitleRequested: window.addSubtitle()
             onShowInFolderRequested: Platform.showInFolder(mpv.path)
+            onShowHomeRequested: {
+                window.saveProgress()
+                History.save()
+                mpv.stop()
+                window.loading = false
+                window.errorText = ""
+            }
         }
 
         PlaylistPanel {
@@ -307,20 +347,50 @@ Window {
                 Row {
                     anchors.horizontalCenter: parent.horizontalCenter
                     spacing: 8
-                    visible: playlist.count > 1
-                    Text {
-                        text: qsTr("Next video ›")
-                        color: Theme.text
-                        font.family: Theme.font
-                        font.weight: Font.Medium
-                        font.pixelSize: 14
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: window.next()
-                        }
+                    Controls.Button {
+                        text: qsTr("Open file")
+                        onClicked: window.openFiles()
+                    }
+                    Controls.Button {
+                        text: qsTr("Try again")
+                        visible: player.mpv.ready && playlist.currentIndex >= 0
+                        onClicked: window.playIndex(playlist.currentIndex)
+                    }
+                    Controls.Button {
+                        text: qsTr("Next video")
+                        visible: playlist.currentIndex + 1 < playlist.count
+                        onClicked: window.next()
                     }
                 }
+            }
+        }
+
+        Spinner {
+            anchors.centerIn: player
+            active: window.loading && !player.loaded && window.errorText === ""
+        }
+
+        Rectangle {
+            z: 20
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 16
+            width: Math.min(parent.width - 32, 640)
+            height: notice.implicitHeight + 24
+            radius: 8
+            color: Theme.surface
+            visible: window.notification !== "" || History.lastError !== ""
+            Text {
+                id: notice
+                anchors.fill: parent
+                anchors.margins: 12
+                text: window.notification || History.lastError
+                wrapMode: Text.Wrap
+                color: Theme.text
+                font.family: Theme.font
+                font.pixelSize: 14
+                Accessible.role: Accessible.AlertMessage
+                Accessible.name: text
             }
         }
 
@@ -407,9 +477,35 @@ Window {
         player.bezel.flashText(qsTr("Font size %1%").arg(Math.round(settings.subScale * 100)))
     }
 
+    function readQualityMemory() {
+        try {
+            const value = JSON.parse(settings.qualityMemory || "{}")
+            return value && typeof value === "object" && !Array.isArray(value) ? value : ({})
+        } catch (error) {
+            return ({})
+        }
+    }
+
     // ------------------------------------------------- mpv lifecycle
     Connections {
         target: player.mpv
+
+        function onInitializationErrorChanged() {
+            window.loading = false
+            window.errorText = player.mpv.initializationError
+        }
+        function onCommandFailed(operation, error) {
+            if (operation === "loadfile") {
+                window.loading = false
+                window.errorText = error
+            } else {
+                window.notify(qsTr("%1 failed: %2").arg(operation).arg(error))
+            }
+        }
+        function onCommandSucceeded(operation) {
+            if (operation === "screenshot")
+                window.notify(qsTr("Screenshot saved"))
+        }
 
         function onReadyChanged() {
             const m = player.mpv
@@ -500,6 +596,7 @@ Window {
     }
 
     Component.onCompleted: {
+        errorText = player.mpv.initializationError
         if (Platform.startFullscreen)
             toggleFullscreen()
     }

@@ -44,7 +44,7 @@ public:
     Q_INVOKABLE void showInFolder(const QString &path);
     Q_INVOKABLE void inhibitIdle(bool inhibit);
     // Floats, pins and shrinks the window into a corner (Hyprland), or restores it.
-    Q_INVOKABLE bool setMiniplayer(QWindow *window, bool enabled);
+    Q_INVOKABLE void setMiniplayer(QWindow *window, bool enabled);
 
     Q_INVOKABLE static QString fileUrl(const QString &path);
     Q_INVOKABLE static QString localPath(const QUrl &url);
@@ -62,10 +62,14 @@ public:
     Q_INVOKABLE void log(const QString &message);
     Q_INVOKABLE void quit(int code);
 
+signals:
+    void miniplayerFinished(bool enabled, bool handled);
+
 private:
     explicit Platform(QObject *parent = nullptr);
     QJsonObject hyprClient() const;
     bool hyprlandLua() const;
+    bool configureMiniplayer(bool enabled);
 
     QStringList m_initialFiles;
     bool m_startFullscreen = false;
@@ -74,4 +78,5 @@ private:
     bool m_inhibitWanted = false;
     bool m_inhibitPending = false;
     QJsonObject m_restoreState;
+    bool m_miniplayerPending = false;
 };

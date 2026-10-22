@@ -19,6 +19,18 @@ Item {
     readonly property bool hovered: mouse.containsMouse
 
     signal clicked()
+    activeFocusOnTab: enabled && visible
+    Accessible.role: hasToggle ? Accessible.CheckBox : Accessible.MenuItem
+    Accessible.name: label + (value ? ", " + value : "")
+    Accessible.checkable: checkable || hasToggle
+    Accessible.checked: hasToggle ? toggled : checked
+    Accessible.onPressAction: if (enabled) row.clicked()
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+            row.clicked()
+            event.accepted = true
+        }
+    }
 
     implicitHeight: rowHeight
     implicitWidth: labelText.x + labelText.implicitWidth + 24 + valueText.implicitWidth
@@ -27,6 +39,8 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: 8
+        border.width: row.activeFocus ? 2 : 0
+        border.color: Theme.white
         color: mouse.pressed ? Theme.pressed : mouse.containsMouse ? Theme.hover : "transparent"
     }
 

@@ -7,7 +7,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick OpenGL Widgets DBus ShaderTools)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Qml Quick OpenGL Widgets DBus ShaderTools Concurrent)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(MPV REQUIRED IMPORTED_TARGET mpv)
 pkg_check_modules(LIBAV REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale)
@@ -39,6 +39,7 @@ qt_add_qml_module(localtube
         qml/Frosted.qml
         qml/RoundedImage.qml
         qml/PlayerView.qml
+        qml/AdaptiveQuality.qml
         qml/ControlBar.qml
         qml/ProgressBar.qml
         qml/PillButton.qml
@@ -77,7 +78,7 @@ qt_add_shaders(localtube "localtube_shaders"
 target_include_directories(localtube PRIVATE src)
 target_compile_definitions(localtube PRIVATE LOCALTUBE_VERSION="${PROJECT_VERSION}")
 target_link_libraries(localtube PRIVATE
-    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::OpenGL Qt6::Widgets Qt6::DBus
+    Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::OpenGL Qt6::Widgets Qt6::DBus Qt6::Concurrent
     PkgConfig::MPV PkgConfig::LIBAV)
 
 include(GNUInstallDirs)
@@ -86,3 +87,22 @@ install(TARGETS localtube RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/localtube.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES data/localtube.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 install(FILES assets/fonts/OFL.txt DESTINATION ${CMAKE_INSTALL_DATADIR}/licenses/localtube RENAME Roboto-OFL.txt)
+
+include(CTest)
+if(BUILD_TESTING)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    qt_add_executable(localtube_core_tests
+        tests/core_test.cpp
+        src/history.cpp src/history.h
+        src/playlistmodel.cpp src/playlistmodel.h
+        src/thumbnailer.cpp src/thumbnailer.h
+        src/framegrabber.cpp src/framegrabber.h
+        src/mpvobject.cpp src/mpvobject.h
+    )
+    target_include_directories(localtube_core_tests PRIVATE src)
+    target_compile_definitions(localtube_core_tests PRIVATE LOCALTUBE_EXECUTABLE="$<TARGET_FILE:localtube>")
+    add_dependencies(localtube_core_tests localtube)
+    target_link_libraries(localtube_core_tests PRIVATE Qt6::Test Qt6::Gui Qt6::Qml Qt6::Quick Qt6::OpenGL Qt6::Concurrent PkgConfig::LIBAV PkgConfig::MPV)
+    add_test(NAME core COMMAND localtube_core_tests)
+    set_tests_properties(core PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+endif()

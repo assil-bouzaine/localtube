@@ -9,6 +9,7 @@
 #include <QtQml/qqmlregistration.h>
 
 #include <deque>
+#include <atomic>
 #include <vector>
 
 class ThumbnailWorker;
@@ -41,7 +42,7 @@ public:
 
     static QString cacheRoot();
     // Removes preview folders that have not been used for `maxAgeDays`.
-    static void cleanupCache(int maxAgeDays);
+    static void cleanupCache(int maxAgeDays, qint64 maxBytes = 512LL * 1024 * 1024);
 
 signals:
     void sourceChanged();
@@ -60,6 +61,8 @@ private:
     int m_slotCount = 0;
     QHash<int, QString> m_ready;
     QTimer m_prefillDelay;
+    QTimer m_touchTimer;
+    QString m_cacheDir;
     ThumbnailWorker *m_worker = nullptr;
 };
 
@@ -100,4 +103,7 @@ private:
     std::vector<int> m_order;
     size_t m_orderPos = 0;
     std::vector<char> m_done;
+    std::vector<char> m_attempts;
+    std::atomic<quint64> m_generation {0};
+    std::atomic<bool> m_stopping {false};
 };

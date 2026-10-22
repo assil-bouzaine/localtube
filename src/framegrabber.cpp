@@ -72,8 +72,14 @@ uint8_t toSdr8(float v)
 
 } // namespace
 
-FrameGrabber::FrameGrabber(const QString &path)
+FrameGrabber::FrameGrabber(const QString &path, std::function<bool()> cancelled)
+    : m_cancelled(std::move(cancelled))
 {
+    m_operation.start();
+    m_format = avformat_alloc_context();
+    if (!m_format)
+        return;
+    m_format->interrupt_callback = {&FrameGrabber::interrupt, this};
     if (avformat_open_input(&m_format, path.toUtf8().constData(), nullptr, nullptr) < 0) {
         m_format = nullptr;
         return;
@@ -131,6 +137,18 @@ FrameGrabber::FrameGrabber(const QString &path)
     m_codec = ctx;
     m_packet = av_packet_alloc();
     m_frame = av_frame_alloc();
+    if (!m_packet || !m_frame)
+        avcodec_free_context(&m_codec);
+}
+
+bool FrameGrabber::interrupted() const
+{
+    return (m_cancelled && m_cancelled()) || m_operation.elapsed() >= 5000;
+}
+
+int FrameGrabber::interrupt(void *opaque)
+{
+    return static_cast<FrameGrabber *>(opaque)->interrupted() ? 1 : 0;
 }
 
 FrameGrabber::~FrameGrabber()
@@ -144,6 +162,8 @@ FrameGrabber::~FrameGrabber()
 
 bool FrameGrabber::seek(double seconds)
 {
+    m_operation.restart();
+    if (interrupted()) return false;
     AVStream *st = m_format->streams[m_stream];
     int64_t ts = av_rescale_q(std::llround(seconds * AV_TIME_BASE), AV_TIME_BASE_Q, st->time_base);
     if (st->start_time != AV_NOPTS_VALUE)
@@ -164,7 +184,7 @@ double FrameGrabber::keyframeBefore(double seconds)
     if (!isOpen() || !seek(seconds))
         return -1;
     const AVStream *st = m_format->streams[m_stream];
-    for (int guard = 0; guard < 4000; ++guard) {
+    for (int guard = 0; guard < 4000 && !interrupted(); ++guard) {
         if (av_read_frame(m_format, m_packet) < 0)
             break;
         const bool match = m_packet->stream_index == m_stream && (m_packet->flags & AV_PKT_FLAG_KEY);
@@ -188,7 +208,7 @@ QImage FrameGrabber::grab(double seconds, int width, double *frameTime)
     bool started = false;
     bool got = false;
     int sent = 0;
-    for (int guard = 0; guard < 4000 && !got; ++guard) {
+    for (int guard = 0; guard < 4000 && !got && !interrupted(); ++guard) {
         if (av_read_frame(m_format, m_packet) < 0) {
             avcodec_send_packet(m_codec, nullptr);
             got = avcodec_receive_frame(m_codec, m_frame) == 0;
@@ -229,7 +249,7 @@ QImage FrameGrabber::convert(const AVFrame *f, int width)
 {
     const int srcW = f->width;
     const int srcH = f->height;
-    if (srcW <= 0 || srcH <= 0 || width <= 0)
+    if (srcW <= 0 || srcH <= 0 || width <= 0 || interrupted())
         return {};
 
     AVRational sar = f->sample_aspect_ratio;
@@ -237,8 +257,9 @@ QImage FrameGrabber::convert(const AVFrame *f, int width)
         sar = AVRational {1, 1};
     const double aspect = srcW * av_q2d(sar) / srcH;
     const bool sideways = std::lround(std::fabs(m_rotation)) % 180 == 90;
-    const int outW = sideways ? std::max(2, static_cast<int>(std::lround(width * aspect))) : width;
-    const int outH = sideways ? width : std::max(2, static_cast<int>(std::lround(width / aspect)));
+    // Bound allocations even when a damaged file advertises an extreme aspect ratio.
+    const int outW = static_cast<int>(std::clamp(sideways ? width * aspect : double(width), 2.0, 2048.0));
+    const int outH = static_cast<int>(std::clamp(sideways ? double(width) : width / aspect, 2.0, 2048.0));
 
     const bool pq = f->color_trc == AVCOL_TRC_SMPTE2084;
     const bool hlg = f->color_trc == AVCOL_TRC_ARIB_STD_B67;
@@ -253,6 +274,7 @@ QImage FrameGrabber::convert(const AVFrame *f, int width)
                              sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
 
     QImage image(outW, outH, QImage::Format_RGB888);
+    if (image.isNull()) return {};
     if (!hdr) {
         uint8_t *dst[4] = {image.bits(), nullptr, nullptr, nullptr};
         int dstStride[4] = {static_cast<int>(image.bytesPerLine()), 0, 0, 0};

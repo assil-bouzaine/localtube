@@ -6,6 +6,9 @@ PillButton {
     id: root
 
     property bool checked: false
+    Accessible.role: Accessible.CheckBox
+    Accessible.checkable: true
+    Accessible.checked: checked
 
     tooltip: checked ? qsTr("Autoplay is on") : qsTr("Autoplay is off")
 

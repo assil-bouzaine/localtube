@@ -16,6 +16,28 @@ Item {
 
     height: 6
     enabled: player.loaded && duration > 0
+    activeFocusOnTab: enabled
+    Accessible.role: Accessible.Slider
+    Accessible.name: qsTr("Playback position")
+    Accessible.description: Theme.formatTime(playTime) + " / " + Theme.formatTime(duration)
+    Accessible.onIncreaseAction: mpv.seekBy(5, true)
+    Accessible.onDecreaseAction: mpv.seekBy(-5, true)
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Left) mpv.seekBy(-5, true)
+        else if (event.key === Qt.Key_Right) mpv.seekBy(5, true)
+        else if (event.key === Qt.Key_Home) mpv.seekTo(0, true)
+        else if (event.key === Qt.Key_End) mpv.seekTo(duration, true)
+        else return
+        event.accepted = true
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -3
+        color: "transparent"
+        border.width: bar.activeFocus ? 2 : 0
+        border.color: Theme.white
+    }
 
     function timeAt(x) {
         return duration > 0 ? Math.max(0, Math.min(1, x / width)) * duration : 0

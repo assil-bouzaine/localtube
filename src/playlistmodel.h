@@ -4,12 +4,15 @@
 #include <QHash>
 #include <QMutex>
 #include <QSet>
+#include <QSortFilterProxyModel>
 #include <QThread>
 #include <QTimer>
 #include <QWaitCondition>
 #include <QtQml/qqmlregistration.h>
 
 #include <deque>
+#include <atomic>
+#include <memory>
 
 class QQmlEngine;
 class QJSEngine;
@@ -49,6 +52,7 @@ private:
         double duration = 0;
         QString poster;
         bool done = false;
+        qint64 used = 0;
     };
     const Info *lookup(const QString &path);
     void onReady(const QString &path, const QString &key, double duration, const QString &poster);
@@ -91,6 +95,7 @@ class PlaylistModel : public QAbstractListModel
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(int currentIndex READ currentIndex WRITE setCurrentIndex NOTIFY currentIndexChanged)
     Q_PROPERTY(QString title READ title NOTIFY titleChanged)
+    Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
 
 public:
     enum Role {
@@ -100,9 +105,11 @@ public:
         PosterRole,
         ProgressRole,
         CurrentRole,
+        SourceIndexRole,
     };
 
     explicit PlaylistModel(QObject *parent = nullptr);
+    ~PlaylistModel() override;
 
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role) const override;
@@ -112,10 +119,11 @@ public:
     int currentIndex() const { return m_current; }
     void setCurrentIndex(int index);
     QString title() const { return m_title; }
+    bool busy() const { return m_busy; }
 
     // Builds the playlist from files and/or folders. A single file pulls in its
-    // whole folder. Returns the index that should start playing, or -1.
-    Q_INVOKABLE int open(const QStringList &paths);
+    // whole folder. Scans in the background; opened() selects the starting row.
+    Q_INVOKABLE void open(const QStringList &paths);
     Q_INVOKABLE QString pathAt(int index) const;
     Q_INVOKABLE QString titleAt(int index) const;
     Q_INVOKABLE int indexOf(const QString &path) const;
@@ -124,6 +132,9 @@ signals:
     void countChanged();
     void currentIndexChanged();
     void titleChanged();
+    void busyChanged();
+    void opened(int index);
+    void openFailed(const QString &error);
 
 private:
     void refreshPath(const QString &path, const QList<int> &roles);
@@ -131,4 +142,27 @@ private:
     QStringList m_paths;
     int m_current = -1;
     QString m_title;
+    bool m_busy = false;
+    std::shared_ptr<std::atomic<quint64>> m_scanGeneration = std::make_shared<std::atomic<quint64>>(0);
+};
+
+// Search changes the displayed rows without changing playback order.
+class PlaylistFilter : public QSortFilterProxyModel
+{
+    Q_OBJECT
+    QML_ELEMENT
+    Q_PROPERTY(PlaylistModel *playlist READ playlist WRITE setPlaylist NOTIFY playlistChanged)
+    Q_PROPERTY(QString query READ query WRITE setQuery NOTIFY queryChanged)
+public:
+    explicit PlaylistFilter(QObject *parent = nullptr);
+    PlaylistModel *playlist() const { return qobject_cast<PlaylistModel *>(sourceModel()); }
+    void setPlaylist(PlaylistModel *playlist);
+    QString query() const { return m_query; }
+    void setQuery(const QString &query);
+    Q_INVOKABLE int filteredIndex(int sourceRow) const;
+signals:
+    void playlistChanged();
+    void queryChanged();
+private:
+    QString m_query;
 };

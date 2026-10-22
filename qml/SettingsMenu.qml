@@ -277,11 +277,26 @@ Item {
                     }
                     Item {
                         id: speedSlider
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Slider
+                        Accessible.name: qsTr("Playback speed")
+                        Accessible.description: menu.mpv.speed + "x"
+                        Accessible.onIncreaseAction: menu.player.setSpeed(menu.mpv.speed + 0.05)
+                        Accessible.onDecreaseAction: menu.player.setSpeed(menu.mpv.speed - 0.05)
+                        Keys.onLeftPressed: menu.player.setSpeed(menu.mpv.speed - 0.05)
+                        Keys.onRightPressed: menu.player.setSpeed(menu.mpv.speed + 0.05)
                         width: 150
                         height: 32
                         readonly property real minSpeed: 0.25
                         readonly property real maxSpeed: 4
                         readonly property real fraction: (Math.min(maxSpeed, Math.max(minSpeed, menu.mpv.speed)) - minSpeed) / (maxSpeed - minSpeed)
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 4
+                            color: "transparent"
+                            border.width: speedSlider.activeFocus ? 2 : 0
+                            border.color: Theme.white
+                        }
                         Rectangle {
                             anchors.verticalCenter: parent.verticalCenter
                             width: parent.width

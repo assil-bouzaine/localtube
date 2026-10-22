@@ -292,6 +292,9 @@ public:
 private:
     void initialize()
     {
+        if (m_initializationAttempted || !m_core->mpv)
+            return;
+        m_initializationAttempted = true;
         mpv_opengl_init_params glInit {getProcAddress, nullptr};
         std::vector<mpv_render_param> params {
             {MPV_RENDER_PARAM_API_TYPE, const_cast<char *>(MPV_RENDER_API_TYPE_OPENGL)},
@@ -309,8 +312,13 @@ private:
         params.push_back({MPV_RENDER_PARAM_INVALID, nullptr});
 
         mpv_render_context *gl = nullptr;
-        if (mpv_render_context_create(&gl, m_core->mpv, params.data()) < 0) {
-            qCritical("localtube: failed to create the mpv OpenGL render context");
+        const int error = mpv_render_context_create(&gl, m_core->mpv, params.data());
+        if (error < 0) {
+            auto *n = m_core->notifier;
+            const QString message = QStringLiteral("Could not initialize video rendering: %1. Check your graphics driver and restart LocalTube.").arg(QString::fromUtf8(mpv_error_string(error)));
+            QMetaObject::invokeMethod(n, [n, message] {
+                if (n->item) n->item->onRenderContextFailed(message);
+            }, Qt::QueuedConnection);
             return;
         }
         m_core->gl.store(gl);
@@ -320,6 +328,7 @@ private:
 
     std::shared_ptr<MpvCore> m_core;
     QMetaObject::Connection m_swapConnection;
+    bool m_initializationAttempted = false;
 };
 
 void MpvObject::setDefaultOptions(const QVariantMap &options)
@@ -337,8 +346,10 @@ MpvObject::MpvObject(QQuickItem *parent)
     m_core->notifier->item = this;
 
     mpv_handle *mpv = mpv_create();
-    if (!mpv)
-        qFatal("localtube: could not create the mpv context");
+    if (!mpv) {
+        m_initializationError = tr("Could not create the playback engine. Restart LocalTube.");
+        return;
+    }
     m_core->mpv = mpv;
 
     const QVariantMap options = defaultOptions();
@@ -348,8 +359,14 @@ MpvObject::MpvObject(QQuickItem *parent)
             qWarning("localtube: mpv option %s=%s: %s", qPrintable(it.key()), qPrintable(it.value().toString()), mpv_error_string(err));
     }
 
-    if (mpv_initialize(mpv) < 0)
-        qFatal("localtube: could not initialize mpv");
+    const int initError = mpv_initialize(mpv);
+    if (initError < 0) {
+        m_initializationError = tr("Could not initialize playback: %1. Check your mpv configuration and restart LocalTube.")
+                                    .arg(QString::fromUtf8(mpv_error_string(initError)));
+        mpv_terminate_destroy(mpv);
+        m_core->mpv = nullptr;
+        return;
+    }
 
     mpv_request_log_messages(mpv, qEnvironmentVariableIsSet("LOCALTUBE_DEBUG") ? "v" : "warn");
     for (const auto &p : kObserved)
@@ -380,6 +397,12 @@ void MpvObject::onRenderContextReady()
     emit readyChanged();
 }
 
+void MpvObject::onRenderContextFailed(const QString &error)
+{
+    m_initializationError = error;
+    emit initializationErrorChanged();
+}
+
 void MpvObject::onMpvEvents()
 {
     mpv_handle *mpv = m_core->mpv;
@@ -394,8 +417,7 @@ void MpvObject::onMpvEvents()
             break;
         }
         case MPV_EVENT_START_FILE:
-            m_scrubInFlight = false;
-            m_scrubPending = false;
+            m_scrubs.cancel();
             emit fileStarted();
             break;
         case MPV_EVENT_FILE_LOADED:
@@ -424,16 +446,24 @@ void MpvObject::onMpvEvents()
             break;
         }
         case MPV_EVENT_PLAYBACK_RESTART:
-            m_scrubInFlight = false;
-            if (m_scrubPending)
-                issueScrub();
+            if (const auto target = m_scrubs.completed())
+                issueScrub(*target);
             emit playbackRestarted();
             break;
         case MPV_EVENT_SET_PROPERTY_REPLY:
-        case MPV_EVENT_COMMAND_REPLY:
             if (event->error < 0)
                 fprintf(stderr, "[localtube] mpv request failed: %s\n", mpv_error_string(event->error));
             break;
+        case MPV_EVENT_COMMAND_REPLY: {
+            const QString operation = m_requests.take(event->reply_userdata);
+            if (!operation.isEmpty()) {
+                if (event->error < 0)
+                    emit commandFailed(operation, QString::fromUtf8(mpv_error_string(event->error)));
+                else
+                    emit commandSucceeded(operation);
+            }
+            break;
+        }
         case MPV_EVENT_LOG_MESSAGE: {
             auto *msg = static_cast<mpv_event_log_message *>(event->data);
             QByteArray text(msg->text);
@@ -535,47 +565,53 @@ void MpvObject::handlePropertyChange(uint64_t id, void *data, int format)
 
 void MpvObject::setPaused(bool paused)
 {
+    if (!m_core->mpv) return;
     int flag = paused ? 1 : 0;
     mpv_set_property_async(m_core->mpv, 0, "pause", MPV_FORMAT_FLAG, &flag);
 }
 
 void MpvObject::setVolume(double volume)
 {
+    if (!m_core->mpv) return;
     volume = qBound(0.0, volume, 100.0);
     mpv_set_property_async(m_core->mpv, 0, "volume", MPV_FORMAT_DOUBLE, &volume);
 }
 
 void MpvObject::setMuted(bool muted)
 {
+    if (!m_core->mpv) return;
     int flag = muted ? 1 : 0;
     mpv_set_property_async(m_core->mpv, 0, "mute", MPV_FORMAT_FLAG, &flag);
 }
 
 void MpvObject::setSpeed(double speed)
 {
+    if (!m_core->mpv) return;
     speed = qBound(0.07, speed, 16.0);
     mpv_set_property_async(m_core->mpv, 0, "speed", MPV_FORMAT_DOUBLE, &speed);
 }
 
 void MpvObject::setLoop(bool loop)
 {
+    if (!m_core->mpv) return;
     const char *value = loop ? "inf" : "no";
     mpv_set_property_async(m_core->mpv, 0, "loop-file", MPV_FORMAT_STRING, &value);
 }
 
 void MpvObject::setAudioFilter(const QString &filter)
 {
+    if (!m_core->mpv) return;
     if (m_audioFilter == filter)
         return;
     m_audioFilter = filter;
     const QByteArray value = filter.toUtf8();
-    const char *v = value.constData();
-    mpv_set_property_async(m_core->mpv, 0, "af", MPV_FORMAT_STRING, &v);
+    setOption(QStringLiteral("af"), QString::fromUtf8(value));
     emit audioFilterChanged();
 }
 
 void MpvObject::loadFile(const QString &path, double start, bool paused)
 {
+    m_scrubs.cancel();
     setPaused(paused);
     QVariantMap cmd {
         {QStringLiteral("name"), QStringLiteral("loadfile")},
@@ -584,23 +620,39 @@ void MpvObject::loadFile(const QString &path, double start, bool paused)
     };
     if (start > 0)
         cmd.insert(QStringLiteral("options"), QVariantMap {{QStringLiteral("start"), QString::number(start, 'f', 3)}});
-    NodeBuilder builder(cmd);
-    mpv_command_node_async(m_core->mpv, 0, builder.node());
+    dispatchCommand(cmd, QStringLiteral("loadfile"));
 }
 
 void MpvObject::stop()
 {
+    m_scrubs.cancel();
     command({QStringLiteral("stop")});
 }
 
 void MpvObject::command(const QVariantList &args)
 {
+    dispatchCommand(args, args.isEmpty() ? QStringLiteral("command") : args.first().toString());
+}
+
+void MpvObject::dispatchCommand(const QVariant &args, const QString &operation)
+{
+    if (!m_core->mpv) {
+        emit commandFailed(operation, m_initializationError);
+        return;
+    }
+    const quint64 request = ++m_nextRequest;
+    m_requests.insert(request, operation);
     NodeBuilder builder(args);
-    mpv_command_node_async(m_core->mpv, 0, builder.node());
+    const int error = mpv_command_node_async(m_core->mpv, request, builder.node());
+    if (error < 0) {
+        m_requests.remove(request);
+        emit commandFailed(operation, QString::fromUtf8(mpv_error_string(error)));
+    }
 }
 
 QVariant MpvObject::commandSync(const QVariantList &args)
 {
+    if (!m_core->mpv) return {};
     NodeBuilder builder(args);
     mpv_node result {};
     if (mpv_command_node(m_core->mpv, builder.node(), &result) < 0)
@@ -612,6 +664,7 @@ QVariant MpvObject::commandSync(const QVariantList &args)
 
 QVariant MpvObject::getProperty(const QString &name) const
 {
+    if (!m_core->mpv) return {};
     mpv_node node {};
     if (mpv_get_property(m_core->mpv, name.toUtf8().constData(), MPV_FORMAT_NODE, &node) < 0)
         return {};
@@ -622,6 +675,7 @@ QVariant MpvObject::getProperty(const QString &name) const
 
 void MpvObject::setOption(const QString &name, const QVariant &value)
 {
+    if (!m_core->mpv) return;
     // Scalars go through mpv's option parser as strings: a JS number arrives
     // as a double, which mpv rejects for integer options.
     const int type = value.typeId();
@@ -633,8 +687,7 @@ void MpvObject::setOption(const QString &name, const QVariant &value)
             text = QByteArray::number(value.toDouble(), 'g', 10);
         else
             text = value.toString().toUtf8();
-        const char *v = text.constData();
-        mpv_set_property_async(m_core->mpv, 0, name.toUtf8().constData(), MPV_FORMAT_STRING, &v);
+        dispatchCommand(QVariantList {QStringLiteral("set"), name, QString::fromUtf8(text)}, QStringLiteral("set ") + name);
         return;
     }
     NodeBuilder builder(value);
@@ -643,36 +696,30 @@ void MpvObject::setOption(const QString &name, const QVariant &value)
 
 void MpvObject::seekTo(double seconds, bool exact)
 {
+    m_scrubs.cancel();
     command({QStringLiteral("seek"), qMax(0.0, seconds), exact ? QStringLiteral("absolute+exact") : QStringLiteral("absolute+keyframes")});
 }
 
 void MpvObject::seekBy(double seconds, bool exact)
 {
+    m_scrubs.cancel();
     command({QStringLiteral("seek"), seconds, exact ? QStringLiteral("relative+exact") : QStringLiteral("relative+keyframes")});
 }
 
 void MpvObject::scrub(double seconds)
 {
-    m_scrubTarget = qMax(0.0, seconds);
-    // A seek that never reports back (e.g. the file changed) must not block
-    // scrubbing forever.
-    if (m_scrubInFlight && m_scrubTimer.isValid() && m_scrubTimer.elapsed() < 1000) {
-        m_scrubPending = true;
-        return;
-    }
-    issueScrub();
+    if (const auto target = m_scrubs.request(qMax(0.0, seconds)))
+        issueScrub(*target);
 }
 
-void MpvObject::issueScrub()
+void MpvObject::issueScrub(double target)
 {
-    m_scrubPending = false;
-    m_scrubInFlight = true;
-    m_scrubTimer.start();
-    command({QStringLiteral("seek"), m_scrubTarget, QStringLiteral("absolute+keyframes")});
+    command({QStringLiteral("seek"), target, QStringLiteral("absolute+keyframes")});
 }
 
 void MpvObject::frameStep(bool backwards)
 {
+    m_scrubs.cancel();
     command({backwards ? QStringLiteral("frame-back-step") : QStringLiteral("frame-step")});
 }
 

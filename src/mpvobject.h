@@ -1,5 +1,7 @@
 #pragma once
 
+#include "seekqueue.h"
+
 #include <QElapsedTimer>
 #include <QQuickFramebufferObject>
 #include <QVariant>
@@ -17,6 +19,7 @@ class MpvObject : public QQuickFramebufferObject
     QML_ELEMENT
 
     Q_PROPERTY(bool ready READ ready NOTIFY readyChanged)
+    Q_PROPERTY(QString initializationError READ initializationError NOTIFY initializationErrorChanged)
     Q_PROPERTY(bool paused READ paused WRITE setPaused NOTIFY pausedChanged)
     Q_PROPERTY(double position READ position NOTIFY positionChanged)
     Q_PROPERTY(double duration READ duration NOTIFY durationChanged)
@@ -51,6 +54,7 @@ public:
     static void setDefaultOptions(const QVariantMap &options);
 
     bool ready() const { return m_ready; }
+    QString initializationError() const { return m_initializationError; }
     bool paused() const { return m_paused; }
     double position() const { return m_position; }
     double duration() const { return m_duration; }
@@ -101,6 +105,9 @@ public:
     Q_INVOKABLE void screenshot();
 
 signals:
+    void initializationErrorChanged();
+    void commandFailed(const QString &operation, const QString &error);
+    void commandSucceeded(const QString &operation);
     void readyChanged();
     void pausedChanged();
     void positionChanged();
@@ -134,16 +141,21 @@ signals:
 private slots:
     void onMpvEvents();
     void onRenderContextReady();
+    void onRenderContextFailed(const QString &error);
 
 private:
     friend struct MpvCore;
     friend class MpvRenderer;
     void handlePropertyChange(uint64_t id, void *data, int format);
-    void issueScrub();
+    void issueScrub(double target);
+    void dispatchCommand(const QVariant &args, const QString &operation);
 
     std::shared_ptr<MpvCore> m_core;
 
     bool m_ready = false;
+    QString m_initializationError;
+    quint64 m_nextRequest = 0;
+    QHash<quint64, QString> m_requests;
     bool m_paused = false;
     double m_position = 0;
     double m_duration = 0;
@@ -168,8 +180,5 @@ private:
     double m_fps = 0;
     QString m_audioFilter;
 
-    bool m_scrubInFlight = false;
-    bool m_scrubPending = false;
-    double m_scrubTarget = 0;
-    QElapsedTimer m_scrubTimer;
+    SeekQueue m_scrubs;
 };

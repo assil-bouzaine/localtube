@@ -1,0 +1,20 @@
+name: Build and regression checks
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed git cmake mpv ffmpeg qt6-base qt6-declarative qt6-svg qt6-wayland qt6-shadertools
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Run regression checks
+        run: ctest --test-dir build --output-on-failure

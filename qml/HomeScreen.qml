@@ -1,9 +1,11 @@
 import QtQuick
+import QtQuick.Controls as Controls
 import LocalTube
 
 // Shown when nothing is playing: open buttons and "Continue watching".
 Rectangle {
     id: home
+    objectName: "homeScreen"
 
     signal openFilesRequested()
     signal openFolderRequested()
@@ -15,6 +17,26 @@ Rectangle {
     function refresh() { recent = History.recent(12) }
     onVisibleChanged: if (visible) refresh()
     Component.onCompleted: refresh()
+    Connections {
+        target: History
+        function onChanged(path) { if (home.visible) home.refresh() }
+    }
+
+    Controls.Dialog {
+        id: clearHistoryDialog
+        anchors.centerIn: parent
+        width: Math.min(home.width - 32, 400)
+        implicitHeight: 200
+        title: qsTr("Clear watch history?")
+        modal: true
+        standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+        onAccepted: { History.clear(); History.save() }
+        contentItem: Controls.Label {
+            text: qsTr("This removes saved progress for all videos. Your media files are kept.")
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+        }
+    }
 
     component PillAction: Item {
         id: action
@@ -22,11 +44,23 @@ Rectangle {
         property var icon
         property bool primary: false
         signal clicked()
+        activeFocusOnTab: enabled && visible
+        Accessible.role: Accessible.Button
+        Accessible.name: text
+        Accessible.onPressAction: action.clicked()
+        Keys.onPressed: event => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                action.clicked()
+                event.accepted = true
+            }
+        }
         width: row.implicitWidth + 32
         height: 36
         Rectangle {
             anchors.fill: parent
             radius: height / 2
+            border.width: action.activeFocus ? 2 : 0
+            border.color: Theme.brandRed
             color: action.primary ? (mouse.containsMouse ? "#d9d9d9" : "#f1f1f1")
                                   : (mouse.containsMouse ? Qt.rgba(1, 1, 1, 0.2) : Qt.rgba(1, 1, 1, 0.1))
         }
@@ -93,6 +127,12 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 8
             visible: home.recent.length > 0
+            PillAction {
+                text: qsTr("Clear history")
+                icon: Icons.info
+                visible: home.width >= 640
+                onClicked: clearHistoryDialog.open()
+            }
             PillAction {
                 text: qsTr("Open folder")
                 icon: Icons.folder
@@ -190,8 +230,23 @@ Rectangle {
                     delegate: Item {
                         id: card
                         required property var modelData
+                        required property int index
+                        objectName: "historyCard" + index
                         width: (content.width - (grid.cols - 1) * 16) / grid.cols
                         height: thumbBox.height + 64
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Button
+                        Accessible.name: MediaInfo.displayTitle(modelData.path)
+                        Accessible.onPressAction: home.openPathRequested(modelData.path)
+                        Keys.onPressed: event => {
+                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                home.openPathRequested(modelData.path)
+                                event.accepted = true
+                            } else if (event.key === Qt.Key_Delete) {
+                                History.remove(modelData.path)
+                                event.accepted = true
+                            }
+                        }
 
                         Item {
                             id: thumbBox
@@ -202,6 +257,8 @@ Rectangle {
                                 anchors.fill: parent
                                 radius: 12
                                 color: Theme.surfaceHover
+                                border.width: card.activeFocus ? 2 : 0
+                                border.color: Theme.white
                             }
                             RoundedImage {
                                 anchors.fill: parent
@@ -279,6 +336,17 @@ Rectangle {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: home.openPathRequested(card.modelData.path)
+                        }
+
+                        PillButton {
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            width: 36
+                            height: 36
+                            iconSize: 18
+                            icon: Icons.close
+                            tooltip: qsTr("Remove from history")
+                            onClicked: History.remove(card.modelData.path)
                         }
                     }
                 }

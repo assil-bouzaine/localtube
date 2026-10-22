@@ -10,10 +10,13 @@
 #include <QFontDatabase>
 #include <QIcon>
 #include <QQmlApplicationEngine>
+#include <QQmlError>
 #include <QQuickWindow>
 #include <QStandardPaths>
 #include <QSurfaceFormat>
 #include <QThread>
+#include <QTimer>
+#include <QtConcurrentRun>
 #include <QUrl>
 
 #include <clocale>
@@ -147,13 +150,25 @@ int main(int argc, char *argv[])
 
     Platform::instance()->configure(files, parser.isSet(fullscreenOpt), parser.value(selfTestOpt));
 
-    std::unique_ptr<QThread> cleanup(QThread::create([] { Thumbnailer::cleanupCache(45); }));
-    cleanup->start(QThread::IdlePriority);
+    auto cleanup = QtConcurrent::run([] { Thumbnailer::cleanupCache(45); });
+    QTimer cacheMaintenance;
+    cacheMaintenance.setInterval(10 * 60 * 1000);
+    QObject::connect(&cacheMaintenance, &QTimer::timeout, &app, [&cleanup] {
+        if (cleanup.isFinished())
+            cleanup = QtConcurrent::run([] { Thumbnailer::cleanupCache(45); });
+    });
+    cacheMaintenance.start();
 
     QQmlApplicationEngine engine;
+    if (qEnvironmentVariableIsSet("LOCALTUBE_DEBUG")) {
+        QObject::connect(&engine, &QQmlEngine::warnings, &app, [](const QList<QQmlError> &warnings) {
+            for (const QQmlError &warning : warnings)
+                fprintf(stderr, "[qml] %s\n", qPrintable(warning.toString()));
+        });
+    }
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app, [] { QCoreApplication::exit(1); }, Qt::QueuedConnection);
     engine.loadFromModule("LocalTube", "Main");
     const int code = app.exec();
-    cleanup->wait();
+    cleanup.waitForFinished();
     return code;
 }

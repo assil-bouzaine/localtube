@@ -27,6 +27,25 @@ Item {
     implicitWidth: 48
     implicitHeight: 48
     opacity: enabled ? 1 : 0.5
+    activeFocusOnTab: enabled && visible
+    Accessible.role: Accessible.Button
+    Accessible.name: tooltip
+    Accessible.onPressAction: if (enabled) root.clicked()
+    Keys.onPressed: event => {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+            root.clicked()
+            event.accepted = true
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: 2
+        radius: Math.min(root.highlightRadius, height / 2)
+        color: "transparent"
+        border.width: root.activeFocus ? 2 : 0
+        border.color: Theme.white
+    }
 
     Rectangle {
         visible: root.showHighlight

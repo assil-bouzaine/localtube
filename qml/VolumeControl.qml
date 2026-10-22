@@ -7,7 +7,7 @@ Item {
 
     required property Item player
     readonly property var mpv: player.mpv
-    readonly property bool expanded: (hover.hovered || slider.pressed || keepOpen.running) && !player.xsmall
+    readonly property bool expanded: (hover.hovered || slider.pressed || sliderBox.activeFocus || muteButton.activeFocus || keepOpen.running) && !player.xsmall
     readonly property real level: mpv.muted ? 0 : mpv.volume / 100
 
     width: player.buttonWidth + (expanded ? 52 + 16 : 0)
@@ -57,12 +57,28 @@ Item {
 
     Item {
         id: sliderBox
+        activeFocusOnTab: !root.player.xsmall
+        Accessible.role: Accessible.Slider
+        Accessible.name: qsTr("Volume")
+        Accessible.description: Math.round(root.mpv.volume) + "%"
+        Accessible.onIncreaseAction: root.player.changeVolume(5)
+        Accessible.onDecreaseAction: root.player.changeVolume(-5)
+        Keys.onLeftPressed: root.player.changeVolume(-5)
+        Keys.onRightPressed: root.player.changeVolume(5)
         x: root.player.buttonWidth
         width: 52
         height: parent.height
         opacity: root.expanded ? 1 : 0
         visible: opacity > 0
         Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.Bezier; easing.bezierCurve: Theme.curve } }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: 4
+            color: "transparent"
+            border.width: sliderBox.activeFocus ? 2 : 0
+            border.color: Theme.white
+        }
 
         Rectangle {
             anchors.verticalCenter: parent.verticalCenter

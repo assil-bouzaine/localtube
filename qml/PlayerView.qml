@@ -38,6 +38,7 @@ Item {
     signal openFolderRequested()
     signal addSubtitleRequested()
     signal showInFolderRequested()
+    signal showHomeRequested()
 
     readonly property alias mpv: mpv
     readonly property alias thumbnailer: thumbnailer
@@ -99,7 +100,7 @@ Item {
     property bool keyboardActive: false
     readonly property bool popupOpen: settingsMenu.open || contextMenu.open || chapterMenu.open
     readonly property bool controlsVisible: loaded && (mpv.paused || ended || popupOpen || pointerActive || keyboardActive
-                                                       || controlBar.hovered || progressBar.active || miniplayer && videoMouse.containsMouse)
+                                                       || chrome.activeFocus || controlBar.hovered || progressBar.active || miniplayer && videoMouse.containsMouse)
 
     function poke() {
         pointerActive = true
@@ -259,7 +260,6 @@ Item {
         if (!loaded)
             return
         mpv.screenshot()
-        bezel.flashText(qsTr("Screenshot saved to Pictures"))
     }
 
     function setSleepTimer(minutes) {
@@ -278,107 +278,12 @@ Item {
             upNext.showEndScreen()
     }
 
-    // ---------------------------------------------- adaptive quality
-    property int autoLevel: 0
-    readonly property int renderLevel: qualityMode === 0 ? autoLevel : qualityMode - 1
-    readonly property string qualityClass: lines ? lines + "p" + (mpv.fps > 35 ? "60" : "30") + (isHdr ? "hdr" : "") : ""
-
-    onQualityClassChanged: {
-        if (!qualityClass)
-            return
-        const remembered = qualityMemory[qualityClass]
-        if (remembered !== undefined)
-            autoLevel = remembered
-        else
-            autoLevel = (isHdr || videoW * videoH * Math.max(mpv.fps, 30) > 3840 * 2160 * 31) ? 1 : 0
-    }
-    onRenderLevelChanged: applyRenderLevel()
-    Component.onCompleted: applyRenderLevel()
-
-    function applyRenderLevel() {
-        const L = renderLevel
-        // 0: mpv's high quality defaults; 1: no HDR peak detection and
-        // cheap chroma upscaling; 2: fastest scalers (good for 4K60 on iGPUs).
-        mpv.setOption("scale", L >= 2 ? "bilinear" : "lanczos")
-        mpv.setOption("cscale", L >= 1 ? "bilinear" : "lanczos")
-        mpv.setOption("dscale", "hermite")
-        mpv.setOption("correct-downscaling", true)
-        mpv.setOption("sigmoid-upscaling", L === 0)
-        mpv.setOption("dither-depth", L >= 2 ? "no" : "auto")
-        mpv.setOption("hdr-compute-peak", L === 0 ? "auto" : "no")
-    }
-
-    // Counts presented frames, so drops caused by the window not being shown
-    // (another workspace, minimized) are not mistaken for a slow GPU.
-    property int presentedFrames: 0
-    Connections {
-        target: player.Window.window
-        function onFrameSwapped() { player.presentedFrames++ }
-    }
-
-    Timer {
-        id: dropMonitor
-        interval: 2000
-        repeat: true
-        running: player.loaded && !mpv.paused && !mpv.seeking && player.qualityMode === 0
-        property real lastDrops: -1
-        property real lastPosition: 0
-        property int lastPresented: 0
-        property int badStreak: 0
-        property int goodTime: 0
-        property bool probing: false
-        property bool probed: false
-        function reset() {
-            lastDrops = -1
-            badStreak = 0
-        }
-        onRunningChanged: reset()
-        onTriggered: {
-            const drops = Number(mpv.getProperty("frame-drop-count")) || 0
-            const position = mpv.position
-            const presented = player.presentedFrames - lastPresented
-            const frames = (position - lastPosition) * mpv.fps
-            if (lastDrops >= 0 && mpv.fps > 0 && frames > 0 && presented >= frames * 0.5) {
-                const rate = (drops - lastDrops) / frames
-                if (rate > 0.04) {
-                    goodTime = 0
-                    if (++badStreak >= 2 && player.autoLevel < 2) {
-                        badStreak = 0
-                        probing = false
-                        player.autoLevel++
-                        player.qualityLearned(player.qualityClass, player.autoLevel)
-                    }
-                } else {
-                    badStreak = 0
-                    goodTime += interval
-                    if (goodTime >= 30000) {
-                        goodTime = 0
-                        if (probing) {
-                            // The better level held up: remember it.
-                            probing = false
-                            player.qualityLearned(player.qualityClass, player.autoLevel)
-                        } else if (!probed && player.autoLevel > 0) {
-                            // Like YouTube's adaptive quality, try one step up.
-                            probed = true
-                            probing = true
-                            player.autoLevel--
-                        }
-                    }
-                }
-            }
-            lastDrops = drops
-            lastPosition = position
-            lastPresented = player.presentedFrames
-        }
-    }
+    readonly property int renderLevel: adaptiveQuality.renderLevel
+    AdaptiveQuality { id: adaptiveQuality; player: player }
 
     Connections {
         target: mpv
-        function onPlaybackRestarted() { dropMonitor.reset() }
         function onFileStarted() {
-            dropMonitor.probed = false
-            dropMonitor.probing = false
-            dropMonitor.goodTime = 0
             upNext.cancel()
             player.showRemaining = false
         }
@@ -563,7 +468,7 @@ Item {
     }
 
     // Bottom: progress bar and control bar.
-    Item {
+    FocusScope {
         id: chrome
         anchors.fill: parent
         opacity: player.controlsVisible ? 1 : 0

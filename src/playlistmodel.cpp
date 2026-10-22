@@ -8,11 +8,16 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QJSEngine>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QUrl>
@@ -88,7 +93,7 @@ QImage representativeFrame(FrameGrabber &grabber, int width)
 
 MediaInfo *MediaInfo::instance()
 {
-    static MediaInfo *info = new MediaInfo;
+    static MediaInfo *info = new MediaInfo(QCoreApplication::instance());
     return info;
 }
 
@@ -108,6 +113,11 @@ MediaInfo::MediaInfo(QObject *parent)
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(3000);
     connect(&m_saveTimer, &QTimer::timeout, this, &MediaInfo::saveIndex);
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this, [this] {
+        m_worker->stop();
+        m_worker->wait();
+        saveIndex();
+    });
 }
 
 MediaInfo::~MediaInfo()
@@ -152,14 +162,16 @@ const MediaInfo::Info *MediaInfo::lookup(const QString &path)
         keyIt = m_keyForPath.insert(path, keyFor(info));
     }
     const QString &key = *keyIt;
-    const auto it = m_byKey.constFind(key);
-    if (it != m_byKey.cend() && it->done && (it->poster.isEmpty() || QFile::exists(it->poster)))
+    auto it = m_byKey.find(key);
+    if (it != m_byKey.end() && it->done && (it->poster.isEmpty() || QFile::exists(it->poster))) {
+        it->used = QDateTime::currentSecsSinceEpoch();
         return &*it;
+    }
     if (!m_queued.contains(key)) {
         m_queued.insert(key);
         m_worker->enqueue(path, key);
     }
-    return it != m_byKey.cend() ? &*it : nullptr;
+    return it != m_byKey.end() ? &*it : nullptr;
 }
 
 QString MediaInfo::poster(const QString &path)
@@ -177,7 +189,7 @@ double MediaInfo::duration(const QString &path)
 void MediaInfo::onReady(const QString &path, const QString &key, double duration, const QString &poster)
 {
     m_queued.remove(key);
-    m_byKey.insert(key, Info {duration, poster, true});
+    m_byKey.insert(key, Info {duration, poster, true, QDateTime::currentSecsSinceEpoch()});
     ++m_revision;
     emit revisionChanged();
     emit infoReady(path);
@@ -193,16 +205,33 @@ void MediaInfo::loadIndex()
     const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
     for (auto it = root.constBegin(); it != root.constEnd(); ++it) {
         const QJsonObject o = it.value().toObject();
-        m_byKey.insert(it.key(), Info {o.value(QStringLiteral("duration")).toDouble(), o.value(QStringLiteral("poster")).toString(), true});
+        const QString poster = o.value(QStringLiteral("poster")).toString();
+        if (!poster.isEmpty() && !QFile::exists(poster)) continue;
+        m_byKey.insert(it.key(), Info {o.value(QStringLiteral("duration")).toDouble(), poster, true,
+                                      o.value(QStringLiteral("used")).toInteger(QDateTime::currentSecsSinceEpoch())});
     }
 }
 
 void MediaInfo::saveIndex()
 {
+    const qint64 cutoff = QDateTime::currentSecsSinceEpoch() - 45LL * 86400;
+    QList<QString> keys;
+    for (auto it = m_byKey.begin(); it != m_byKey.end();) {
+        if (it->used < cutoff || (!it->poster.isEmpty() && !QFile::exists(it->poster)))
+            it = m_byKey.erase(it);
+        else {
+            keys << it.key();
+            ++it;
+        }
+    }
+    std::sort(keys.begin(), keys.end(), [this](const QString &a, const QString &b) { return m_byKey.value(a).used > m_byKey.value(b).used; });
+    for (qsizetype i = 4000; i < keys.size(); ++i)
+        m_byKey.remove(keys.at(i));
     QJsonObject root;
     for (auto it = m_byKey.cbegin(); it != m_byKey.cend(); ++it) {
         if (it->done)
-            root.insert(it.key(), QJsonObject {{QStringLiteral("duration"), it->duration}, {QStringLiteral("poster"), it->poster}});
+            root.insert(it.key(), QJsonObject {{QStringLiteral("duration"), it->duration}, {QStringLiteral("poster"), it->poster},
+                                              {QStringLiteral("used"), it->used}});
     }
     QDir().mkpath(posterDir());
     QSaveFile file(posterDir() + QStringLiteral("/index.json"));
@@ -221,6 +250,7 @@ void MediaInfoWorker::enqueue(const QString &path, const QString &key)
 
 void MediaInfoWorker::stop()
 {
+    requestInterruption();
     QMutexLocker lock(&m_mutex);
     m_quit = true;
     m_wake.wakeAll();
@@ -243,7 +273,7 @@ void MediaInfoWorker::run()
         const auto &[path, key] = job;
         constexpr int width = 480;
 
-        FrameGrabber grabber(path);
+        FrameGrabber grabber(path, [this] { return isInterruptionRequested(); });
         QImage image;
         // 1. Thumbnail written next to the video by yt-dlp --write-thumbnail.
         const QFileInfo info(path);
@@ -264,7 +294,8 @@ void MediaInfoWorker::run()
         QString poster;
         if (!image.isNull()) {
             poster = posterDir() + QLatin1Char('/') + key + QStringLiteral(".jpg");
-            if (!image.convertToFormat(QImage::Format_RGB888).save(poster, "JPG", 85))
+            QSaveFile output(poster);
+            if (!output.open(QIODevice::WriteOnly) || !image.convertToFormat(QImage::Format_RGB888).save(&output, "JPG", 85) || !output.commit())
                 poster.clear();
         }
         emit ready(path, key, grabber.duration(), poster);
@@ -301,6 +332,7 @@ QVariant PlaylistModel::data(const QModelIndex &index, int role) const
     case PosterRole: return MediaInfo::instance()->poster(path);
     case ProgressRole: return History::instance()->progress(path);
     case CurrentRole: return index.row() == m_current;
+    case SourceIndexRole: return index.row();
     default: return {};
     }
 }
@@ -314,6 +346,7 @@ QHash<int, QByteArray> PlaylistModel::roleNames() const
         {PosterRole, "poster"},
         {ProgressRole, "progress"},
         {CurrentRole, "current"},
+        {SourceIndexRole, "sourceIndex"},
     };
 }
 
@@ -330,15 +363,66 @@ void PlaylistModel::setCurrentIndex(int index)
     emit currentIndexChanged();
 }
 
-int PlaylistModel::open(const QStringList &paths)
+PlaylistModel::~PlaylistModel()
 {
+    ++*m_scanGeneration;
+}
+
+void PlaylistModel::open(const QStringList &paths)
+{
+    const auto generation = m_scanGeneration;
+    const quint64 request = ++*generation;
+    if (!m_busy) {
+        m_busy = true;
+        emit busyChanged();
+    }
+    struct ScanResult {
+        QStringList files;
+        QString start;
+        QString folder;
+    };
+    auto *watcher = new QFutureWatcher<ScanResult>(this);
+    connect(watcher, &QFutureWatcher<ScanResult>::finished, this, [this, watcher, generation, request] {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+        if (generation->load() != request)
+            return;
+        m_busy = false;
+        emit busyChanged();
+        if (result.files.isEmpty()) {
+            emit openFailed(tr("No readable media files were found."));
+            return;
+        }
+        beginResetModel();
+        m_paths = result.files;
+        m_current = -1;
+        endResetModel();
+        emit countChanged();
+        emit currentIndexChanged();
+        m_title = QFileInfo(result.folder).fileName();
+        emit titleChanged();
+        const int index = result.start.isEmpty() ? 0 : static_cast<int>(m_paths.indexOf(result.start));
+        setCurrentIndex(index);
+        emit opened(index);
+    });
+    watcher->setFuture(QtConcurrent::run([paths, generation, request] {
     QStringList files;
     QString start;
     QString folder;
 
-    const auto scan = [](const QString &dir) {
-        QStringList entries = QDir(dir).entryList(MediaInfo::mediaFilters(), QDir::Files | QDir::Readable);
+    const auto scan = [generation, request](const QString &dir) {
+        QStringList entries;
+        QDirIterator iterator(dir, MediaInfo::mediaFilters(), QDir::Files | QDir::Readable);
+        while (iterator.hasNext()) {
+            if (generation->load() != request)
+                return QStringList {};
+            iterator.next();
+            entries << iterator.fileName();
+        }
         QCollator collator;
+        // The C locale does not implement numeric collation.
+        if (collator.locale().language() == QLocale::C)
+            collator.setLocale(QLocale(QLocale::English, QLocale::UnitedStates));
         collator.setNumericMode(true);
         collator.setCaseSensitivity(Qt::CaseInsensitive);
         std::sort(entries.begin(), entries.end(), collator);
@@ -357,36 +441,28 @@ int PlaylistModel::open(const QStringList &paths)
             folder = info.absolutePath();
             start = info.absoluteFilePath();
             files = scan(folder);
-            if (!files.contains(start))
+            if (info.isFile() && info.isReadable() && !files.contains(start))
                 files.prepend(start);
+            if (!info.isFile() || !info.isReadable())
+                files.clear();
         }
     } else {
         for (const QString &p : paths) {
+            if (generation->load() != request)
+                return ScanResult {};
             const QFileInfo info(p);
             if (info.isDir())
                 files << scan(info.absoluteFilePath());
-            else if (info.exists())
+            else if (info.isFile() && info.isReadable())
                 files << info.absoluteFilePath();
         }
         if (!files.isEmpty())
             folder = QFileInfo(files.first()).absolutePath();
     }
 
-    beginResetModel();
-    m_paths = files;
-    m_current = -1;
-    endResetModel();
-    emit countChanged();
-
-    const QString title = QFileInfo(folder).fileName();
-    if (m_title != title) {
-        m_title = title;
-        emit titleChanged();
-    }
-
-    const int index = start.isEmpty() ? (files.isEmpty() ? -1 : 0) : static_cast<int>(files.indexOf(start));
-    setCurrentIndex(index);
-    return index;
+    files.removeDuplicates();
+    return ScanResult {files, start, folder};
+    }));
 }
 
 QString PlaylistModel::pathAt(int index) const
@@ -406,7 +482,38 @@ int PlaylistModel::indexOf(const QString &path) const
 
 void PlaylistModel::refreshPath(const QString &path, const QList<int> &roles)
 {
+    if (path.isEmpty() && !m_paths.isEmpty()) {
+        emit dataChanged(index(0), index(count() - 1), roles);
+        return;
+    }
     const int row = static_cast<int>(m_paths.indexOf(path));
     if (row >= 0)
         emit dataChanged(index(row), index(row), roles);
+}
+
+PlaylistFilter::PlaylistFilter(QObject *parent)
+    : QSortFilterProxyModel(parent)
+{
+    setFilterRole(PlaylistModel::TitleRole);
+    setFilterCaseSensitivity(Qt::CaseInsensitive);
+}
+
+void PlaylistFilter::setPlaylist(PlaylistModel *playlist)
+{
+    if (sourceModel() == playlist) return;
+    setSourceModel(playlist);
+    emit playlistChanged();
+}
+
+void PlaylistFilter::setQuery(const QString &query)
+{
+    if (m_query == query) return;
+    m_query = query;
+    setFilterFixedString(query);
+    emit queryChanged();
+}
+
+int PlaylistFilter::filteredIndex(int sourceRow) const
+{
+    return sourceModel() ? mapFromSource(sourceModel()->index(sourceRow, 0)).row() : -1;
 }

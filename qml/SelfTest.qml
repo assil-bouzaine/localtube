@@ -10,6 +10,11 @@ Item {
     readonly property string dir: Platform.selfTestDir
     property int step: 0
     property var steps: []
+    property double waitingSince: Date.now()
+
+    function check(condition, message) {
+        if (!condition) throw new Error(message)
+    }
 
     function find(item, name) {
         if (!item)
@@ -26,8 +31,7 @@ Item {
     function center(name, fx, fy) {
         const item = find(win.contentItem, name)
         if (!item) {
-            Platform.log("SELFTEST: no item " + name)
-            return Qt.point(0, 0)
+            throw new Error("No item " + name)
         }
         return item.mapToItem(null, item.width * (fx === undefined ? 0.5 : fx), item.height * (fy === undefined ? 0.5 : fy))
     }
@@ -37,7 +41,8 @@ Item {
     function key(k, text) { window.handleKey({ key: k, text: text || "", modifiers: 0, accepted: false }) }
     function shot(name) {
         const ok = Platform.grab(win, dir + "/" + name + ".png")
-        Platform.log("SELFTEST: shot " + name + (ok ? "" : " FAILED"))
+        check(ok, "Could not save screenshot " + name)
+        Platform.log("SELFTEST: shot " + name)
     }
 
     property double seekStart: 0
@@ -66,6 +71,59 @@ Item {
     }
 
     Component.onCompleted: {
+        if (dir.indexOf("/home-controls") >= 0) {
+            steps = [
+                [100, () => {
+                    const card = find(win.contentItem, "historyCard0")
+                    check(card !== null, "Continue-watching card was not created")
+                    check(card.activeFocusOnTab, "History card cannot receive keyboard focus")
+                    card.forceActiveFocus()
+                    check(card.activeFocus, "History card did not receive focus")
+                    Platform.key(win, Qt.Key_Delete)
+                }],
+                [200, () => {
+                    const home = find(win.contentItem, "homeScreen")
+                    check(home.recent.length === 0, "Delete did not remove the focused history card")
+                    check(History.save(), "History removal was not saved")
+                    shot("home_after_remove")
+                    Platform.log("SELFTEST: home keyboard checks passed")
+                    Platform.quit(0)
+                }],
+            ]
+            timer.interval = steps[0][0]
+            timer.start()
+            return
+        }
+        if (dir.indexOf("/regression") >= 0) {
+            steps = [
+                [100, () => {
+                    check(player.loaded, "Video did not load")
+                    player.mpv.paused = true
+                    player.mpv.scrub(5)
+                    player.mpv.scrub(10)
+                    player.mpv.scrub(15)
+                    player.mpv.seekTo(20, true)
+                }],
+                [1200, () => {
+                    check(Math.abs(player.mpv.position - 20) < 0.25, "A preview overrode the committed seek")
+                    window.saveProgress()
+                    check(History.save(), "History save failed")
+                    check(Math.abs(History.resumePosition(player.mpv.path) - 20) < 0.25, "Resume position was not saved")
+                    window.notification = ""
+                    player.mpv.setOption("screenshot-directory", "/dev/null/localtube")
+                    player.mpv.screenshot()
+                    check(window.notification === "", "Screenshot reported success before completion")
+                }],
+                [1000, () => {
+                    check(window.notification.indexOf("screenshot failed") >= 0, "Screenshot failure was not reported")
+                    Platform.log("SELFTEST: playback regression checks passed")
+                    Platform.quit(0)
+                }],
+            ]
+            timer.interval = steps[0][0]
+            timer.start()
+            return
+        }
         if (dir.indexOf("/readme") >= 0) {
             steps = [
                 [4200, () => move(Qt.point(win.width / 2, win.height / 2))],
@@ -233,7 +291,24 @@ Item {
     Timer {
         id: timer
         onTriggered: {
-            test.steps[test.step][1]()
+            // Wait for actual readiness instead of assuming decoding starts in time.
+            if (test.step === 0 && Platform.initialFiles.length && !player.loaded) {
+                if (window.errorText !== "" || Date.now() - test.waitingSince > 15000) {
+                    Platform.log("SELFTEST FAILED: " + (window.errorText || "Playback readiness timed out"))
+                    Platform.quit(1)
+                    return
+                }
+                interval = 100
+                start()
+                return
+            }
+            try {
+                test.steps[test.step][1]()
+            } catch (error) {
+                Platform.log("SELFTEST FAILED: " + error)
+                Platform.quit(1)
+                return
+            }
             test.step++
             if (test.step < test.steps.length) {
                 interval = test.steps[test.step][0]

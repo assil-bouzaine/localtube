@@ -5,9 +5,11 @@
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QSaveFile>
 #include <QUrl>
 
 #include <algorithm>
@@ -35,6 +37,12 @@ Thumbnailer::Thumbnailer(QObject *parent)
     m_prefillDelay.setSingleShot(true);
     m_prefillDelay.setInterval(2500);
     connect(&m_prefillDelay, &QTimer::timeout, this, [this] { m_worker->allowPrefill(); });
+    m_touchTimer.setInterval(30000);
+    connect(&m_touchTimer, &QTimer::timeout, this, [this] {
+        QFile stamp(m_cacheDir + QStringLiteral("/.used"));
+        if (stamp.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            stamp.write(QByteArray::number(QDateTime::currentSecsSinceEpoch()));
+    });
 }
 
 Thumbnailer::~Thumbnailer()
@@ -72,6 +80,8 @@ void Thumbnailer::restart()
     m_ready.clear();
     m_slotCount = 0;
     m_prefillDelay.stop();
+    m_touchTimer.stop();
+    m_cacheDir.clear();
 
     const QFileInfo info(m_source);
     if (m_source.isEmpty() || m_duration <= 0 || !info.isFile()) {
@@ -90,6 +100,8 @@ void Thumbnailer::restart()
     const QString key = QString::fromLatin1(QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Sha1).toHex());
     const QString dir = cacheRoot() + QStringLiteral("/thumbs/") + key;
     QDir().mkpath(dir);
+    m_cacheDir = dir;
+    m_touchTimer.start();
 
     // Marks the folder as recently used for cache cleanup.
     QFile stamp(dir + QStringLiteral("/.used"));
@@ -150,9 +162,11 @@ void ThumbnailWorker::setJob(const Job &job, const QHash<int, QString> &existing
 {
     QMutexLocker lock(&m_mutex);
     m_job = job;
+    m_generation.store(job.generation);
     m_demand.clear();
     m_prefill = false;
     m_done.assign(static_cast<size_t>(std::max(0, job.slotCount)), 0);
+    m_attempts.assign(m_done.size(), 0);
     for (auto it = existing.cbegin(); it != existing.cend(); ++it)
         m_done[static_cast<size_t>(it.key())] = 1;
 
@@ -200,6 +214,7 @@ void ThumbnailWorker::stop()
 {
     QMutexLocker lock(&m_mutex);
     m_quit = true;
+    m_stopping.store(true);
     m_wake.wakeAll();
 }
 
@@ -241,13 +256,16 @@ void ThumbnailWorker::run()
                 break;
             job = m_job;
             m_done[static_cast<size_t>(slot)] = 1;
+            ++m_attempts[static_cast<size_t>(slot)];
         }
         // Someone is hovering over this spot: compete normally for the CPU.
         // Background filling stays at idle priority.
         setPriority(demanded ? QThread::NormalPriority : QThread::IdlePriority);
 
         if (!grabber || openGeneration != job.generation) {
-            grabber = std::make_unique<FrameGrabber>(job.path);
+            grabber = std::make_unique<FrameGrabber>(job.path, [this, generation = job.generation] {
+                return m_stopping.load() || m_generation.load() != generation;
+            });
             openGeneration = job.generation;
             byKeyframe.clear();
         }
@@ -263,20 +281,30 @@ void ThumbnailWorker::run()
                 QFile::remove(target);
                 if (QFile::link(QFileInfo(*it).fileName(), target))
                     file = target;
-            } else {
+            }
+            if (file.isEmpty()) {
                 const QImage image = grabber->grab(t, job.width);
-                if (!image.isNull() && image.save(target, "JPG", 82)) {
+                QSaveFile output(target);
+                if (!image.isNull() && output.open(QIODevice::WriteOnly) && image.save(&output, "JPG", 82) && output.commit()) {
                     file = target;
                     if (keyMs >= 0)
                         byKeyframe.insert(keyMs, target);
                 }
             }
         }
+        if (file.isEmpty()) {
+            QMutexLocker lock(&m_mutex);
+            if (m_job.generation == job.generation && m_attempts[static_cast<size_t>(slot)] < 3)
+                m_done[static_cast<size_t>(slot)] = 0;
+            // A failed open must be retried on the next demand, too.
+            if (!grabber->isOpen())
+                grabber.reset();
+        }
         emit slotReady(job.generation, slot, file);
     }
 }
 
-void Thumbnailer::cleanupCache(int maxAgeDays)
+void Thumbnailer::cleanupCache(int maxAgeDays, qint64 maxBytes)
 {
     const QDir root(cacheRoot() + QStringLiteral("/thumbs"));
     const qint64 now = QDateTime::currentSecsSinceEpoch();
@@ -288,5 +316,36 @@ void Thumbnailer::cleanupCache(int maxAgeDays)
             used = stamp.readAll().trimmed().toLongLong();
         if (now - used > qint64(maxAgeDays) * 86400)
             QDir(root.filePath(name)).removeRecursively();
+    }
+    // Posters used to grow forever. Evict old files as well as old preview folders.
+    const QDir posters(cacheRoot() + QStringLiteral("/posters"));
+    for (const QFileInfo &file : posters.entryInfoList({QStringLiteral("*.jpg")}, QDir::Files)) {
+        if (now - file.lastModified().toSecsSinceEpoch() > qint64(maxAgeDays) * 86400)
+            QFile::remove(file.absoluteFilePath());
+    }
+    struct CacheItem { QString path; qint64 bytes; qint64 used; bool directory; };
+    QList<CacheItem> items;
+    qint64 total = 0;
+    for (const QFileInfo &dir : root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        qint64 bytes = 0;
+        QDirIterator it(dir.absoluteFilePath(), QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+        while (it.hasNext()) { it.next(); bytes += it.fileInfo().size(); }
+        QFile stamp(dir.absoluteFilePath() + QStringLiteral("/.used"));
+        qint64 used = dir.lastModified().toSecsSinceEpoch();
+        if (stamp.open(QIODevice::ReadOnly)) used = stamp.readAll().trimmed().toLongLong();
+        items.append({dir.absoluteFilePath(), bytes, used, true});
+        total += bytes;
+    }
+    for (const QFileInfo &file : posters.entryInfoList({QStringLiteral("*.jpg")}, QDir::Files)) {
+        items.append({file.absoluteFilePath(), file.size(), file.lastModified().toSecsSinceEpoch(), false});
+        total += file.size();
+    }
+    std::sort(items.begin(), items.end(), [](const auto &a, const auto &b) { return a.used < b.used; });
+    for (const auto &item : items) {
+        if (total <= maxBytes) break;
+        // Avoid deleting files another running player has just opened or written.
+        if (now - item.used < 60) continue;
+        const bool removed = item.directory ? QDir(item.path).removeRecursively() : QFile::remove(item.path);
+        if (removed) total -= item.bytes;
     }
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QSet>
 #include <QObject>
 #include <QTimer>
 #include <QVariant>
@@ -15,10 +16,13 @@ class History : public QObject
     Q_OBJECT
     QML_ELEMENT
     QML_SINGLETON
+    Q_PROPERTY(QString lastError READ lastError NOTIFY lastErrorChanged)
 
 public:
     static History *instance();
     static History *create(QQmlEngine *, QJSEngine *);
+    explicit History(QObject *parent = nullptr, const QString &storageFile = {});
+    QString lastError() const { return m_lastError; }
 
     // Position to resume from, or 0 when the file should start from the top.
     Q_INVOKABLE double resumePosition(const QString &path) const;
@@ -29,14 +33,18 @@ public:
     // Most recently watched files that still exist, newest first.
     Q_INVOKABLE QVariantList recent(int max) const;
     Q_INVOKABLE void remove(const QString &path);
-    Q_INVOKABLE void save();
+    Q_INVOKABLE void clear();
+    Q_INVOKABLE bool save();
 
 signals:
     void changed(const QString &path);
+    void lastErrorChanged();
 
 private:
-    explicit History(QObject *parent = nullptr);
+    struct Entry;
     void load();
+    bool readEntries(QHash<QString, Entry> &entries, QString &error) const;
+    void setError(const QString &error);
     void scheduleSave();
 
     struct Entry {
@@ -46,6 +54,10 @@ private:
         qint64 updated = 0;
     };
     QHash<QString, Entry> m_entries;
+    QSet<QString> m_dirty;
+    QSet<QString> m_removed;
+    bool m_clearPending = false;
     QTimer m_saveTimer;
     QString m_file;
+    QString m_lastError;
 };

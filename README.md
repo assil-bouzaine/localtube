@@ -48,6 +48,12 @@ X11).
 - **Default view** (press `T`) shows an "Up next" panel listing the folder, with
   thumbnails and durations. **Theater mode** gives the video the whole window.
 - Home screen with "Continue watching".
+- Playlist search in default view; searching keeps the original playback order.
+- Remove individual items from "Continue watching" or clear watch history.
+  Finished videos are excluded, and the right-click menu offers **Back to library**.
+- Keyboard focus and screen reader labels for player buttons, menus, sliders,
+  playlist entries and history cards. Use Tab to move between controls,
+  Enter/Space to activate them, and Delete to remove a focused history card.
 - yt-dlp aware: strips `[videoid]` from titles, uses yt-dlp's saved thumbnails
   (`--write-thumbnail` / `--embed-thumbnail`) and metadata (`--embed-metadata`
   supplies title and channel). The right-click menu offers *Copy video URL at
@@ -195,8 +201,10 @@ On a weak laptop (e.g. Intel HD 620), decode is the limit, not the player:
 - Settings (volume, autoplay, captions, quality, …) are saved automatically in
   `~/.config/localtube/settings.conf`.
 - Watch history (resume points) is kept in `~/.local/share/localtube/history.json`.
-- Thumbnails and posters are cached in `~/.cache/localtube` (unused previews are
-  removed after 45 days).
+- Thumbnails and posters are cached in `~/.cache/localtube`. Maintenance runs
+  at startup and every 10 minutes, removing items older than 45 days and aiming
+  for a combined 512 MiB budget. Recently used previews are protected, so the
+  cache can temporarily exceed that budget.
 - For mpv power users, `~/.config/localtube/mpv.conf` is loaded if it exists
   (your regular `~/.config/mpv` setup with uosc etc. is left alone).
 
@@ -223,6 +231,18 @@ hl.window_rule({ name = "localtube", match = { class = "^(localtube)$" }, worksp
 Video frames are never blocked on by Qt's render thread (`video-timing-offset=0`
 plus swap reporting), so the UI animates at the display's refresh rate while
 mpv keeps A/V sync.
+
+### Development checks
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
+```
+
+Regression checks use temporary storage and headless playback; they do not
+touch your normal watch history or settings. FFmpeg is used to generate a small
+video fixture. Use `-DBUILD_TESTING=OFF` to build only the app.
 
 Roboto is bundled under the SIL Open Font License (`assets/fonts/OFL.txt`).
 This is an independent project, not affiliated with YouTube or Google.

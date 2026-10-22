@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls as Controls
 import LocalTube
 
 // The list next to the player in default view: every video in the folder,
@@ -10,6 +11,12 @@ Rectangle {
     signal playRequested(int index)
 
     color: Theme.page
+
+    PlaylistFilter {
+        id: filtered
+        playlist: panel.playlist
+        query: search.text
+    }
 
     Rectangle {
         id: box
@@ -59,17 +66,36 @@ Rectangle {
             }
         }
 
+        Controls.TextField {
+            id: search
+            anchors.top: header.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.margins: 8
+            placeholderText: qsTr("Search playlist")
+            Accessible.name: placeholderText
+            Keys.priority: Keys.AfterItem
+            Keys.onPressed: event => {
+                // Typing here must not trigger the player's global shortcuts.
+                if (event.key === Qt.Key_Escape) {
+                    clear()
+                    focus = false
+                }
+                event.accepted = true
+            }
+        }
+
         ListView {
             id: list
-            anchors.top: header.bottom
+            anchors.top: search.bottom
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.margins: 1
             clip: true
-            model: panel.playlist
+            model: filtered
             boundsBehavior: Flickable.StopAtBounds
-            currentIndex: panel.playlist.currentIndex
+            currentIndex: { filtered.query; return filtered.filteredIndex(panel.playlist.currentIndex) }
             highlightFollowsCurrentItem: false
             Component.onCompleted: positionViewAtIndex(Math.max(0, currentIndex), ListView.Center)
             onCurrentIndexChanged: positionViewAtIndex(Math.max(0, currentIndex), ListView.Contain)
@@ -77,6 +103,7 @@ Rectangle {
             delegate: Item {
                 id: entry
                 required property int index
+                required property int sourceIndex
                 required property string path
                 required property string title
                 required property real duration
@@ -85,10 +112,22 @@ Rectangle {
                 required property bool current
                 width: list.width
                 height: 72
+                activeFocusOnTab: true
+                Accessible.role: Accessible.ListItem
+                Accessible.name: title
+                Accessible.onPressAction: panel.playRequested(sourceIndex)
+                Keys.onPressed: event => {
+                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                        panel.playRequested(sourceIndex)
+                        event.accepted = true
+                    }
+                }
 
                 Rectangle {
                     anchors.fill: parent
                     color: entry.current ? Qt.rgba(1, 1, 1, 0.12) : mouse.containsMouse ? Qt.rgba(1, 1, 1, 0.06) : "transparent"
+                    border.width: entry.activeFocus ? 2 : 0
+                    border.color: Theme.white
                 }
 
                 Text {
@@ -96,7 +135,7 @@ Rectangle {
                     width: 28
                     anchors.verticalCenter: parent.verticalCenter
                     horizontalAlignment: Text.AlignHCenter
-                    text: entry.current ? "▶" : entry.index + 1
+                    text: entry.current ? "▶" : entry.sourceIndex + 1
                     color: Theme.textTertiary
                     font.family: Theme.font
                     font.pixelSize: 12
@@ -174,7 +213,7 @@ Rectangle {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: panel.playRequested(entry.index)
+                    onClicked: panel.playRequested(entry.sourceIndex)
                 }
             }
 

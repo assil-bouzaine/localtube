@@ -2,6 +2,8 @@
 
 #include <QImage>
 #include <QString>
+#include <QElapsedTimer>
+#include <functional>
 
 struct AVFormatContext;
 struct AVCodecContext;
@@ -15,7 +17,7 @@ struct SwsContext;
 class FrameGrabber
 {
 public:
-    explicit FrameGrabber(const QString &path);
+    explicit FrameGrabber(const QString &path, std::function<bool()> cancelled = {});
     ~FrameGrabber();
     FrameGrabber(const FrameGrabber &) = delete;
     FrameGrabber &operator=(const FrameGrabber &) = delete;
@@ -35,6 +37,11 @@ public:
 private:
     QImage convert(const AVFrame *frame, int width);
     bool seek(double seconds);
+    bool interrupted() const;
+    static int interrupt(void *opaque);
+
+    std::function<bool()> m_cancelled;
+    QElapsedTimer m_operation;
 
     AVFormatContext *m_format = nullptr;
     AVCodecContext *m_codec = nullptr;
